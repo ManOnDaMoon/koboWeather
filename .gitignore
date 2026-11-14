@@ -1,0 +1,7 @@
+config.lua
+*.log
+__pycache__/
+dist/
+.DS_Store
+FileManager_*.png
+old/
