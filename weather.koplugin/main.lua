@@ -37,6 +37,7 @@ local Weather = WidgetContainer:extend{
     dialog = nil,
     last_body = nil,
     last_values = nil,
+    last_trend = nil,
     last_update = nil,
     last_error = nil,
     running = false,
@@ -366,7 +367,7 @@ local function decode_measurements(body)
         ["Direction"] = raw.wind_direction_cardinal,
     }
     if not values["Température"] then return nil, "Missing outdoor temperature in API response" end
-    return values, payload.station.name
+    return values, payload.station.name, payload.pressure_trend
 end
 
 function Weather:_fetch()
@@ -380,15 +381,9 @@ function Weather:_fetch()
     if code == 401 or code == 403 then return nil, "API token rejected or access denied" end
     if code == 404 then return nil, "Station not found" end
     if code ~= 200 then return nil, "meteodb API returned HTTP " .. tostring(code) end
-    local values, name = decode_measurements(body)
+    local values, name, pressure_trend = decode_measurements(body)
     if not values then return nil, name end
-    return values, nil, name
-end
-
-local function metric_number(value)
-    if not value then return nil end
-    local numeric = tostring(value):gsub(",", "."):match("[-+]?%d+%.?%d*")
-    return tonumber(numeric)
+    return values, nil, name, pressure_trend
 end
 
 function Weather:_primaryMetricList()
@@ -426,23 +421,17 @@ function Weather:_secondaryMetricList()
 end
 
 function Weather:_weatherCondition()
-    local values = self.last_values or {}
-    local rain = metric_number(values["Pluie"])
-    local solar = metric_number(values["Solaire"])
-    if rain and rain >= 10 then
-        return { icon = "storm.svg", label = "ORAGE" }
-    elseif rain and rain > 0 then
-        return { icon = "rain.svg", label = "PLUIE" }
-    elseif solar and solar >= 300 then
-        return { icon = "sun.svg", label = "SOLEIL" }
-    elseif solar and solar >= 80 then
-        return { icon = "partly-cloudy.svg", label = "NUAGEUX" }
-    elseif solar then
-        return { icon = "cloud.svg", label = "COUVERT" }
-    end
-    return { icon = "cloud.svg", label = "MÉTÉO INDISPONIBLE" }
+    local trend = self.last_trend
+    local conditions = {
+        sun = { icon = "sun.svg", label = "SOLEIL ESTIMÉ" },
+        partly_cloudy = { icon = "partly-cloudy.svg", label = "ÉCLAIRCIES ESTIMÉES" },
+        cloud = { icon = "cloud.svg", label = "TEMPS STABLE ESTIMÉ" },
+        rain = { icon = "rain.svg", label = "PLUIE POSSIBLE" },
+        storm = { icon = "storm.svg", label = "TEMPS PERTURBÉ POSSIBLE" },
+    }
+    return (type(trend) == "table" and conditions[trend.condition])
+        or { icon = "cloud.svg", label = "TENDANCE INDISPONIBLE" }
 end
-
 function Weather:_statusText()
     local text = self.last_update and ("Mis à jour le " .. os.date("%d/%m/%Y à %H:%M", self.last_update))
         or "Récupération des données météo…"
@@ -514,7 +503,7 @@ end
 
 function Weather:_refresh()
     if self:_protectLowBattery() then return false end
-    local values, err, station_name = self:_fetch()
+    local values, err, station_name, pressure_trend = self:_fetch()
     if not values then
         logger.warn("Weather plugin: " .. tostring(err))
         self.last_error = "Échec réseau à " .. os.date("%H:%M")
@@ -523,6 +512,7 @@ function Weather:_refresh()
     end
     self.station_name = station_name or self.config.station_name
     self.last_values = values
+    self.last_trend = pressure_trend
     self.last_update = os.time()
     self.last_error = nil
     self:_renderDashboard()
@@ -678,6 +668,7 @@ end
 function Weather:_closeDashboard()
     self:_minimize()
     self.last_values = nil
+    self.last_trend = nil
     self.last_update = nil
     self.last_error = nil
 end

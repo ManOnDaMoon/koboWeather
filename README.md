@@ -22,7 +22,7 @@ Pour éviter que le message **Sleeping mode** par défaut de KOReader apparaisse
 
 Si la charge atteint `low_battery_threshold` (10 % par défaut), le plugin coupe les tâches et réveils météo puis demande la mise en veille de KOReader. La protection ne réarme pas les synchronisations après une reprise manuelle. Elle ne remplace pas l'arrêt matériel automatique de la liseuse.
 
-La température intérieure est lue dans la section **Intérieur** de la page authentifiée. La pression atmosphérique affichée par la station est relative, réduite au niveau de la mer. L'icône météo reste monochrome et s'appuie sur le rayonnement et la pluie : soleil et pluie indiquent des mesures, tandis que nuageux/couvert et orage sont marqués comme estimations. Un rayonnement nul, notamment la nuit, ne permet pas de distinguer un ciel clair d'un ciel couvert; une pluie intense ne confirme pas la présence de foudre.
+La température intérieure est lue dans la section **Intérieur** de la page authentifiée. La pression atmosphérique affichée par la station est relative, réduite au niveau de la mer. L'icône météo monochrome et le web meteodb utilisent la tendance de pression sur trois heures renvoyée par l'API. Les icônes soleil, éclaircies, nuage, pluie et temps perturbé sont des estimations barométriques; elles ne décrivent pas directement le ciel observé.
 
 Les réveils périodiques dépendent du RTC et du chemin de reprise de la version KOReader installée; leur cadence et le retour en veille doivent être validés sur la Kobo Mini. Une extinction complète de la liseuse interrompt les actualisations jusqu'au prochain démarrage.
 
@@ -32,4 +32,4 @@ Lancer `./package.sh` pour créer `dist/kobo-weather-plugin.zip`, une archive co
 
 Sur Kobo Mini, vérifier la connexion, les huit lectures, le délai de rafraîchissement et la reprise après échec réseau ou suspension. Comparer l'autonomie sur des périodes de même durée et noter l'état du Wi-Fi et l'intervalle.
 
-Le plugin appelle l'API JSON `/api/v1/stations/{station_id}/current` de meteodb avec un jeton Bearer via HTTPS. Si le jeton est révoqué, le réseau indisponible ou la réponse invalide, il affiche un message d'erreur sans remplacer le dernier écran de mesures par des valeurs inventées. Les données d'historique et de tendance ne sont pas encore demandées par cette version.
+Le plugin appelle l'API JSON `/api/v1/stations/{station_id}/current` de meteodb avec un jeton Bearer via HTTPS. La réponse inclut `pressure_trend`, calculée à partir des relevés de pression autour de l'instant courant et de celui situé trois heures auparavant. Si l'historique est insuffisant, le serveur signale la tendance comme indisponible et le plugin affiche un libellé adapté. Si le jeton est révoqué, le réseau indisponible ou la réponse invalide, le dernier écran de mesures reste affiché.
