@@ -6,9 +6,9 @@ Les anciens prototypes pour le navigateur Nickel et NickelMenu ont été retiré
 
 ## Configuration
 
-Copier `config.example.lua` vers `config.lua` dans le répertoire du plugin, puis renseigner `base_url`, `station_id`, `username` et `password`. Les options `interval_minutes` (15 par défaut) et `low_battery_threshold` (10 % par défaut) sont facultatives. `station_id` est l'identifiant URL de « Avon vallée », à relever dans l'adresse de la station sur meteodb.
+Copier `config.example.lua` vers `config.lua` dans le répertoire du plugin, puis renseigner `base_url`, `station_id` et `api_token`. Créer un jeton de lecture dans meteodb (menu **Jetons API**) et le copier dans `api_token`; meteodb ne l'affiche qu'une fois et permet de le révoquer. Les options `interval_minutes` (15 par défaut) et `low_battery_threshold` (10 % par défaut) sont facultatives. `station_id` est l'identifiant URL de « Avon vallée », à relever dans l'adresse de la station sur meteodb.
 
-Le mot de passe est stocké en clair sur la liseuse. Garder `config.lua` local : il est ignoré par Git et exclu des archives de transfert.
+Le jeton reste un secret stocké dans `config.lua` sur la liseuse; il est limité à la lecture des stations accessibles au compte et peut être révoqué depuis meteodb. Garder `config.lua` local : il est ignoré par Git et exclu des archives de transfert.
 
 ## Installation
 
@@ -32,4 +32,4 @@ Lancer `./package.sh` pour créer `dist/kobo-weather-plugin.zip`, une archive co
 
 Sur Kobo Mini, vérifier la connexion, les huit lectures, le délai de rafraîchissement et la reprise après échec réseau ou suspension. Comparer l'autonomie sur des périodes de même durée et noter l'état du Wi-Fi et l'intervalle.
 
-Le plugin dépend des noms de cartes HTML actuels de meteodb et des modules HTTPS/cookie fournis par la version KOReader installée. En cas de changement de page ou d'expiration de session, il affiche un message d'erreur sans remplacer le dernier écran de mesures par des valeurs inventées.
+Le plugin appelle l'API JSON `/api/v1/stations/{station_id}/current` de meteodb avec un jeton Bearer via HTTPS. Si le jeton est révoqué, le réseau indisponible ou la réponse invalide, il affiche un message d'erreur sans remplacer le dernier écran de mesures par des valeurs inventées. Les données d'historique et de tendance ne sont pas encore demandées par cette version.
