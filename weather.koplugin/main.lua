@@ -22,6 +22,7 @@ local socket_ok = pcall(require, "socket")
 local http_ok, http = pcall(require, "socket.http")
 local https_ok, https = pcall(require, "ssl.https")
 local ltn12_ok, ltn12 = pcall(require, "ltn12")
+local json_ok, json = pcall(require, "rapidjson")
 local _ = require("gettext")
 local Screen = Device.screen
 
@@ -34,7 +35,6 @@ local Weather = WidgetContainer:extend{
     wakeup_callback = nil,
     resume_classify_task = nil,
     dialog = nil,
-    cookie = nil,
     last_body = nil,
     last_values = nil,
     last_update = nil,
@@ -311,157 +311,78 @@ local function load_config()
     return nil
 end
 
-local function trim(s)
-    return (s:gsub("^%s+", ""):gsub("%s+$", ""))
-end
-
-local function unescape(s)
-    return (s:gsub("&nbsp;", " "):gsub("&#160;", " "):gsub("&deg;", "°")
-        :gsub("&amp;", "&"):gsub("&quot;", '"'):gsub("&#39;", "'")
-        :gsub("&lt;", "<"):gsub("&gt;", ">"))
-end
-
-local function strip_tags(s)
-    return trim(unescape(s:gsub("<[^>]->", " "):gsub("%s+", " ")))
-end
-
-local function request(url, method, body, cookie)
+local function request(url, token)
     if not (socket_ok and ltn12_ok) then return nil, "KOReader socket modules unavailable" end
     local headers = {
         ["User-Agent"] = "KoboWeather/0.1 KOReader",
         ["Connection"] = "close",
+        ["Accept"] = "application/json",
+        ["Authorization"] = "Bearer " .. token,
     }
-    if cookie then headers.Cookie = cookie end
-    if body then
-        headers["Content-Type"] = "application/x-www-form-urlencoded"
-        headers["Content-Length"] = tostring(#body)
-    end
     local sink = {}
     local opts = {
         url = url,
-        method = method or "GET",
+        method = "GET",
         headers = headers,
-        source = body and ltn12.source.string(body) or nil,
         sink = ltn12.sink.table(sink),
         redirect = false,
         timeout = 20,
     }
     local client = url:match("^https:") and (https_ok and https or nil) or (http_ok and http or nil)
     if not client then return nil, "KOReader HTTPS module unavailable" end
-    local result, code, response_headers = client.request(opts)
+    local result, code = client.request(opts)
     if not result then return nil, tostring(code or "network error") end
-    local set_cookie = response_headers and (response_headers["set-cookie"] or response_headers["Set-Cookie"])
-    return table.concat(sink), tonumber(code), response_headers, set_cookie
+    return table.concat(sink), tonumber(code)
 end
 
-local function encode_form(s)
-    return (tostring(s or ""):gsub("\n", "\r\n"):gsub("([^%w%-_%.~ ])", function(c)
-        return string.format("%%%02X", string.byte(c))
-    end):gsub(" ", "+"))
+local function format_metric(value, unit)
+    if type(value) ~= "number" then return nil end
+    local rounded = math.floor(value * 10 + 0.5) / 10
+    local number = tostring(rounded)
+    if number:match("%.0$") then number = number:sub(1, -3) end
+    return number .. (unit or "")
 end
 
-local function cookie_pair(header)
-    if type(header) == "table" then header = header[1] end
-    if type(header) ~= "string" then return nil end
-    return header:match("^%s*([^;]+)")
-end
-
-local function merge_cookie(existing, incoming_header)
-    local pair = cookie_pair(incoming_header)
-    if not pair then return existing end
-    local key = pair:match("^([^=]+)=")
-    if not key then return existing or pair end
-    local entries, replaced = {}, false
-    for item in (existing or ""):gmatch("[^;]+") do
-        item = trim(item)
-        if item:match("^([^=]+)=") == key then
-            entries[#entries + 1] = pair
-            replaced = true
-        else
-            entries[#entries + 1] = item
-        end
+local function decode_measurements(body)
+    if not json_ok or type(json.decode) ~= "function" then return nil, "KOReader JSON module unavailable" end
+    local ok, payload = pcall(json.decode, body)
+    if not ok or type(payload) ~= "table" or type(payload.station) ~= "table"
+        or type(payload.measurements) ~= "table" then
+        return nil, "Invalid meteodb API response"
     end
-    if not replaced then entries[#entries + 1] = pair end
-    return table.concat(entries, "; ")
+    local raw = payload.measurements
+    local values = {
+        ["Température"] = format_metric(raw.temperature_c, " °C"),
+        ["Température intérieure"] = format_metric(raw.indoor_temperature_c, " °C"),
+        ["Humidité"] = format_metric(raw.humidity_pct, " %"),
+        ["Pression"] = format_metric(raw.pressure_hpa, " hPa"),
+        ["Point de rosée"] = format_metric(raw.dew_point_c, " °C"),
+        ["Pluie du jour"] = format_metric(raw.daily_rain_mm, " mm"),
+        ["Pluie"] = format_metric(raw.rain_rate_mm_h, " mm/h"),
+        ["Solaire"] = format_metric(raw.solar_radiation_w_m2, " W/m²"),
+        ["Indice UV"] = format_metric(raw.uv_index, ""),
+        ["Vent"] = format_metric(raw.wind_speed_kmh, " km/h"),
+        ["Rafale"] = format_metric(raw.wind_gust_kmh, " km/h"),
+        ["Direction"] = raw.wind_direction_cardinal,
+    }
+    if not values["Température"] then return nil, "Missing outdoor temperature in API response" end
+    return values, payload.station.name
 end
 
 function Weather:_fetch()
-    local cfg = self.config
-    local base = cfg.base_url:gsub("/+$", "")
-    local login_url = base .. "/login"
-    local station_url = base .. "/station/" .. cfg.station_id
-    if self.cookie then
-        local cached_page, cached_code, _, cached_cookie = request(station_url, "GET", nil, self.cookie)
-        self.cookie = merge_cookie(self.cookie, cached_cookie)
-        if cached_page and cached_code == 200 and not cached_page:find('name="password"') then
-            return cached_page
-        end
-        self.cookie = nil
-    end
-    local body, code, _, set_cookie = request(login_url, "GET")
-    if not body or not code or code >= 400 then return nil, "Cannot open login page" end
-    local cookie = merge_cookie(nil, set_cookie)
-    local post = "username=" .. encode_form(cfg.username) .. "&password=" .. encode_form(cfg.password)
-    local _, post_code, _, post_cookie = request(login_url, "POST", post, cookie)
-    cookie = merge_cookie(cookie, post_cookie)
-    local page, page_code, _, page_cookie = request(station_url, "GET", nil, cookie)
-    cookie = merge_cookie(cookie, page_cookie)
-    if not page or not page_code or page_code >= 400 then return nil, "Cannot load station page" end
-    if page:find('name="password"') or page:find("/login") then
-        return nil, "Login rejected or session expired"
-    end
-    self.cookie = cookie
-    return page
-end
-
-local function parse_card_section(cards, section_title, section)
-    local in_indoor_section = section_title:lower():find("intérieur", 1, true) ~= nil
-    for header, content in section:gmatch("<header[^>]*>(.-)</header>(.-)</article>") do
-        local label = strip_tags(header):lower()
-        local value = content:match("<h1[^>]*>(.-)</h1>")
-        if value then
-            value = strip_tags(value)
-            if label:find("température", 1, true) then
-                local explicitly_indoor = label:find("intérieure", 1, true) or label:find("indoor", 1, true)
-                local explicitly_outdoor = label:find("extérieure", 1, true) or label:find("outdoor", 1, true)
-                if explicitly_indoor or (in_indoor_section and not explicitly_outdoor) then
-                    cards["Température intérieure"] = value
-                else
-                    cards["Température"] = value
-                end
-            elseif label:find("humidité", 1, true) then
-                if in_indoor_section then cards["Humidité intérieure"] = value
-                else cards["Humidité"] = value end
-            elseif label:find("pression", 1, true) then cards["Pression"] = value
-            elseif label:find("rosée", 1, true) then cards["Point de rosée"] = value
-            elseif label:find("quotidienne", 1, true) then cards["Pluie du jour"] = value
-            elseif label:find("intensité", 1, true) then cards["Pluie"] = value
-            elseif label:find("rayonnement", 1, true) then cards["Solaire"] = value
-            elseif label:find("indice uv", 1, true) then cards["Indice UV"] = value
-            elseif label:find("vitesse du vent", 1, true) then cards["Vent"] = value
-            elseif label:find("rafale", 1, true) then cards["Rafale"] = value
-            elseif label:find("direction", 1, true) then cards["Direction"] = value
-        end
-    end
-end
-end
-
-local function parse_measurements(page)
-    local cards = {}
-    local position, found_section = 1, false
-    while true do
-        local heading_start, heading_end, title = page:find("<h2[^>]*>(.-)</h2>", position)
-        if not heading_start then break end
-        found_section = true
-        local next_heading = page:find("<h2[^>]*>", heading_end + 1)
-        local section_end = next_heading and (next_heading - 1) or #page
-        parse_card_section(cards, strip_tags(title), page:sub(heading_end + 1, section_end))
-        if not next_heading then break end
-        position = next_heading
-    end
-    if not found_section then parse_card_section(cards, "", page) end
-    if not cards["Température"] then return nil end
-    return cards
+    local base = self.config.base_url:gsub("/+$", "")
+    if not base:match("^https://") then return nil, "HTTPS required for meteodb API tokens" end
+    local station_id = tostring(self.config.station_id):gsub("[^%w_-]", "")
+    if station_id == "" then return nil, "Invalid station ID" end
+    local url = base .. "/api/v1/stations/" .. station_id .. "/current"
+    local body, code = request(url, self.config.api_token)
+    if not body or not code then return nil, "Network error" end
+    if code == 401 or code == 403 then return nil, "API token rejected or access denied" end
+    if code == 404 then return nil, "Station not found" end
+    if code ~= 200 then return nil, "meteodb API returned HTTP " .. tostring(code) end
+    local values, name = decode_measurements(body)
+    if not values then return nil, name end
+    return values, nil, name
 end
 
 local function metric_number(value)
@@ -593,22 +514,14 @@ end
 
 function Weather:_refresh()
     if self:_protectLowBattery() then return false end
-    local page, err = self:_fetch()
-    if not page then
+    local values, err, station_name = self:_fetch()
+    if not values then
         logger.warn("Weather plugin: " .. tostring(err))
         self.last_error = "Échec réseau à " .. os.date("%H:%M")
         self:_renderDashboard()
         return false
     end
-    local values = parse_measurements(page)
-    if not values then
-        logger.warn("Weather plugin: station HTML not recognized")
-        self.last_error = "Format meteodb non reconnu"
-        self:_renderDashboard()
-        return false
-    end
-    local title = page:match("<h1[^>]*>(.-)</h1>")
-    self.station_name = title and strip_tags(title) or self.config.station_name
+    self.station_name = station_name or self.config.station_name
     self.last_values = values
     self.last_update = os.time()
     self.last_error = nil
@@ -767,7 +680,6 @@ function Weather:_closeDashboard()
     self.last_values = nil
     self.last_update = nil
     self.last_error = nil
-    self.cookie = nil
 end
 
 function Weather:_toggleOrientation()
@@ -784,7 +696,8 @@ end
 
 function Weather:onWeather()
     if not self.config then self.config = load_config() end
-    if not self.config or not self.config.base_url or not self.config.station_id then
+    if not self.config or not self.config.base_url or not self.config.station_id
+        or type(self.config.api_token) ~= "string" or self.config.api_token == "" then
         UIManager:show(InfoMessage:new{
             text = "Configurer config.lua dans weather.koplugin avant utilisation.",
             timeout = 8,
