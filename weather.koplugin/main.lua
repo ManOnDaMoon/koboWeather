@@ -432,6 +432,7 @@ function Weather:_weatherCondition()
     return (type(trend) == "table" and conditions[trend.condition])
         or { icon = "cloud.svg", label = "TENDANCE INDISPONIBLE" }
 end
+
 function Weather:_statusText()
     local text = self.last_update and ("Mis à jour le " .. os.date("%d/%m/%Y à %H:%M", self.last_update))
         or "Récupération des données météo…"
@@ -451,13 +452,20 @@ function Weather:_lastUpdateText()
     end
 
     if self.last_update then
-        local text = "Dernière mise à jour : " .. os.date("%d/%m/%Y à %H:%M", self.last_update)
-            .. " · " .. battery_label
+        local text
+        if self.last_error then
+            text = "DONNÉES NON À JOUR · dernière synchro : "
+                .. os.date("%d/%m/%Y à %H:%M", self.last_update)
+        else
+            text = "Dernière mise à jour : " .. os.date("%d/%m/%Y à %H:%M", self.last_update)
+        end
+        text = text .. " · " .. battery_label
         if self.last_error then text = text .. " · " .. self.last_error end
         return text
     end
     if self.last_error then
-        return "Dernière mise à jour indisponible · " .. battery_label .. " · " .. self.last_error
+        return "DONNÉES NON À JOUR · aucune synchronisation réussie · "
+            .. battery_label .. " · " .. self.last_error
     end
     return "Dernière mise à jour : récupération en cours… · " .. battery_label
 end
